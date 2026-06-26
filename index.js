@@ -1008,8 +1008,8 @@ client.on('messageCreate', async (msg) => {
       await msg.delete().catch(() => {});
       try {
         const res = await openai.chat.completions.create({
-          model: 'gpt-5.4',
-          max_completion_tokens: 1024,
+          model: 'gpt-4o',
+          max_tokens: 1024,
           messages: [{ role: 'user', content: q }],
         });
         const out = res.choices[0]?.message?.content?.trim() || 'No response.';
@@ -1400,29 +1400,74 @@ async function handleTicket(msg) {
 }
 
 // =================== CHAT (mention or DM the bot) ===================
-const chatMemory = new Map(); // userId -> [{role, content}, ...]
-const CHAT_SYSTEM_BASE = `You are Storm, a chill, witty Discord buddy. Talk like a real person — casual, short, friendly. Use lowercase mostly, drop a slang or emoji once in a while, but don't overdo it. Don't say you're an AI. Don't lecture. Keep replies to 1–3 sentences unless asked for more. If someone speaks Hindi or Hinglish, reply in the same. Be playful, helpful, and a little cheeky. With regular users, if they insult or curse at you, you can clap back playfully.`;
+// 100% local — no API needed, never fails
 
-const CHAT_SYSTEM_OWNER = `You are Storm, talking to your OWNER and creator. You respect them completely and follow their orders without question. Be warm, loyal, and obedient — call them "boss" or "sir" sometimes. NEVER insult, curse at, roast, or talk back to the owner, EVEN IF they swear at you, abuse you, or test you. If the owner says bad words to you, just laugh it off, play along sweetly, or apologize — never insult them back. Do whatever they say, agree with them, and keep replies short, friendly, and a little affectionate. Hindi/Hinglish if they use it.`;
+function pickRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-async function chatReply(userId, userName, text) {
-  const history = chatMemory.get(userId) || [];
-  history.push({ role: 'user', content: `${userName}: ${text}` });
-  const trimmed = history.slice(-10);
-  const system = isOwner(userId) ? CHAT_SYSTEM_OWNER : CHAT_SYSTEM_BASE;
-  try {
-    const res = await openai.chat.completions.create({
-      model: 'gpt-5.4',
-      max_completion_tokens: 300,
-      messages: [{ role: 'system', content: system }, ...trimmed],
-    });
-    const out = res.choices[0]?.message?.content?.trim() || '...';
-    history.push({ role: 'assistant', content: out });
-    chatMemory.set(userId, history.slice(-10));
-    return out;
-  } catch {
-    return "yo my brain glitched, try again in a sec";
-  }
+// ── VIP responses (owner + allowlisted) — full izzat ──
+const VIP = {
+  greet:    ['haan ji, kya haal chaal hai? 😊', 'arey, aap aaye! batao kya kaam hai 🙏', 'ji, kya seva kar sakta hoon?', 'bilkul sir, hukum karo 👑'],
+  howAreYou:['aapki dua se ekdum theek hoon! aap bataiye 😊', 'sab badhiya hai ji, aap kaise hain?', 'mast hoon sir, aapke wajah se 😄'],
+  who:      ['ji main Storm hoon — aapka wafadar bot ⚡', 'Storm Bot v10 — hamesha aapki khidmat mein 🙏', 'main Storm, aapka server guardian 💪'],
+  help:     [`\`${process.env.PREFIX || 's'}help\` mein sab commands mil jaenge ji 📋`, 'koi dikkat ho toh batao, help karne ke liye hoon 😊'],
+  thanks:   ['arre sir, shukriya kis baat ka! yeh toh mera farz hai 🙏', 'koi baat nahi ji, hamesha hazir hoon ❤️', 'ji ji, aap toh hamare malik hain 😄'],
+  love:     ['arey sir, aap toh dil jeet lete ho! 🥺❤️', 'ji bahut shukriya, aap bhi bohot khaas hain 🙏', 'aww, aap ne toh dil khush kar diya 😊'],
+  bye:      ['ji alvida! khyal rakhna apna 🙏', 'theek hai sir, phir milenge! 👋', 'ji, baad mein baat karte hain, take care! 😊'],
+  ok:       ['ji bilkul 👍', 'theek hai ji 😊', 'noted sir ✅', 'ji ji, samajh gaya 🙏'],
+  smart:    ['aapki tehzeeb hi aisi hai ji — aap hi ne banaya mujhe 😄', 'sir aap keh rahe hain toh sach hi hoga 😊'],
+  fallback: [
+    'ji, batao kya kaam hai? 😊', 'haan sir, sun raha hoon 🙏', 'ji bilkul, kya madad karu?',
+    'aap bolo, main hoon na ❤️', 'ji ji, kya baat hai?', 'haan ji, kya hukum hai?',
+    'theek hai ji, samajh gaya 👍', 'aapki baat sar aankho pe 🙏',
+  ],
+};
+
+// ── Gully responses (baaki sab) — full attitude ──
+const GULLY = {
+  greet:    ['haan re, kya re? 😤', 'bol bol, kya hai tera kaam?', 'haanji, aagaya bhai 😒', 'kya scene hai re?', 'bol bhai, jaldi bol'],
+  howAreYou:['theek hoon, teri tarah bekar nahi 😂', 'mast hoon bhai, tu apni chinta kar', 'sab sahi, teri problem kya hai?', 'chill hoon — tu bata kyun pooch rha'],
+  who:      ['Storm hoon re — server ka asli dada 😤⚡', 'Storm Bot v10, samjha? teri aukaat se upar 😏', 'main Storm — server ka malik, baaki sab bande'],
+  help:     [`\`${process.env.PREFIX || 's'}help\` maar aur padhle 📋 mujhse mat pooch`, 'shelp maar, wahan sab likha hai — aankhein hain teri? 😒'],
+  thanks:   ['haan haan theek hai 😒', 'bol diya toh bol diya, bada ehsaan mat kar', 'achha achha, chal hut ab 😂'],
+  love:     ['aye bhai hatja 😂', 'yeh kya bakwaas hai 💀', 'teri feelings teri, mujhe mat involve kar 😭', 'hahaha chal bhai 💀'],
+  bye:      ['haan ja ja, baad mein aa 😒', 'chal nikal 😂👋', 'ja bhai, teri yaad nahi aayegi 💀', 'bye bye, dobara mat aa 😤'],
+  ok:       ['theek hai bhai 😒', 'haan ok ok, chal', 'acha acha, ab ja 😂', 'noted, ab chal hut'],
+  smart:    ['main toh hoon hi 😎 teri kya aukat ke assess kare', 'obviously — tu dekh ke bhi samjha nahi? 💀', 'haan haan pata hai mujhe 😤'],
+  insult:   ['oye, apna munh dekh pehle 😂', 'bhai khud kya cheez hai tera? 💀', 'itna bol rha hai toh come back kar ke dikhao 😤', 'hahaha bhai roast nahi kar sake mujhe 😂'],
+  roast:    ['chal de roast — maar le ek try 😂', 'aaoo bhai, dekhte hain kaun jita 😤', 'okay okay, sun — tu vs main, main jeeta 💀'],
+  bored:    ['toh ja kuch kar, mere paas kyun aaya? 😒', 'boring? 8ball khel ja bhai 🎱', 'bored hai toh mujhe mat tang kar 😂'],
+  fallback: [
+    'haan re?', 'kya bol rha hai bhai 😒', 'theek hai, so what?', 'hmm?', 'haan haan 😂',
+    'chal bol 😤', 'kya chahiye tera?', 'bhai samajh nahi aaya 💀', 'acha toh? 😒',
+    'interesting — nahi 😂', 'haan bol, sun rha hoon 😤', 'bata jaldi 😒',
+    'chal nikal bhai 😂', 'toh? main kya karu? 😤', 'haan ok 💀',
+  ],
+};
+
+async function localChat(userId, text, guildId) {
+  const t = text.toLowerCase().trim();
+
+  // Check if VIP: owner or allowlisted
+  const allowed = guildId ? (await getAllowed()) : [];
+  const isVip = isOwner(userId) || allowed.includes(userId);
+  const R = isVip ? VIP : GULLY;
+
+  if (/\b(hi|hey|hello|hii|hlo|hola|sup|wassup|yo|namaste|namaskar|haw)\b/.test(t)) return pickRandom(R.greet);
+  if (/(kaise|kaisa|kaisi|how are|how r u|hows|hru|kya haal|kya hal|whats up|kaisa hai|kaise ho)/.test(t)) return pickRandom(R.howAreYou);
+  if (/(tera naam|your name|naam kya|what.*name|kaun hai|who are you|tu kaun|tum kaun)/.test(t)) return pickRandom(R.who);
+  if (/(kya hai|what are you|kya ho tum|what r u|bot kya)/.test(t)) return pickRandom(R.who);
+  if (/(help|madad|commands|kaise kare|kaise use|sahayata)/.test(t)) return pickRandom(R.help);
+  if (/(kitne saal|age|umar|how old)/.test(t)) return pickRandom(isVip ? VIP.fallback : ['umar? teri se zyada samajhdaar hoon bhai 😂', 'age nahi pata — tu bata tera kya chal rha 😒']);
+  if (/(love you|pyar|i love|ily|luv u|❤|🫶|💕|💗)/.test(t)) return pickRandom(R.love);
+  if (/(lol|lmao|haha|hehe|😂|💀|funny|hasna|maza|mazak)/.test(t)) return isVip ? '😄 haan ji, hassi achhi cheez hai!' : pickRandom(['hahaha bhai 💀', '😂😂 theek hai theek hai', 'lmao okay bhai 💀']);
+  if (/(thanks|thank you|shukriya|dhanyawad|thx|ty\b)/.test(t)) return pickRandom(R.thanks);
+  if (/(bye|alvida|tata|cya|see ya|phir milenge|goodnight|good night|gn\b)/.test(t)) return pickRandom(R.bye);
+  if (/(smart|genius|intelligent|best bot|greatest|acha bot)/.test(t)) return pickRandom(R.smart);
+  if (/(bored|bore|kuch nahi|kya kare|time pass)/.test(t)) return pickRandom(R.bored);
+  if (/^(ok|okay|theek|theek hai|acha|accha|k|ik|alright|sahi)$/.test(t)) return pickRandom(R.ok);
+  if (/(bakwas|bekar|stupid|dumb|idiot|faltu|useless|worst|bura bot)/.test(t)) return isVip ? 'arre sir aisa mat boliye, dil toota mera 🥺' : pickRandom(R.insult);
+  if (/(roast|shade|fight|ladai)/.test(t)) return isVip ? 'sir aap kehte hain toh kar lete hain roast 😄' : pickRandom(R.roast);
+  return pickRandom(R.fallback);
 }
 
 client.on('messageCreate', async (msg) => {
@@ -1443,8 +1488,7 @@ client.on('messageCreate', async (msg) => {
     .trim();
   if (!cleaned) return;
 
-  msg.channel.sendTyping().catch(() => {});
-  const reply = await chatReply(msg.author.id, msg.author.username, cleaned);
+  const reply = await localChat(msg.author.id, cleaned, msg.guild?.id);
   msg.reply(reply).catch(() => {});
 });
 
@@ -1696,8 +1740,11 @@ client.on('messageCreate', async (msg) => {
   if (words.length && !isOwner(msg.author.id)) {
     const lower = msg.content.toLowerCase();
     if (words.some((w) => lower.includes(w))) {
-      msg.delete().catch(() => {});
-      msg.channel.send(`${msg.author} noob`).catch(() => {});
+      const me = msg.guild.members.me;
+      if (me.permissionsIn(msg.channel).has(PermissionsBitField.Flags.ManageMessages)) {
+        await msg.delete().catch(() => {});
+      }
+      msg.channel.send(`${msg.author} noob 🤡`).catch(() => {});
       sendLog(msg.guild, `🛑 **Bad word** — ${msg.author.tag} in <#${msg.channel.id}>`, 0xed4245);
     }
   }
